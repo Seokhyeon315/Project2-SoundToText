@@ -1,116 +1,148 @@
-from io import BytesIO
+'''
+A program that takes a YouTube video link as an user input on terminal, extract high-quality of audio from the video.
+Open AI whisper's translate function is used to translate the audio into English and transcribe it.
+If the audio is English, it transcribes the audio into text using Open AI Whisper API's transcribe function.
+If audio file size is more than 25MB, it will be split into 25MB chunks and transcribe or translate each chunk.
+
+Finally, the transcribe or translate function is done, print the text to the terminal and price of the API call.
+Price of the API call is $0.006 per minute.
+'''
+
 from dotenv import load_dotenv
 import os
 import openai
 from pytube import YouTube
-from pydub import AudioSegment
-from tempfile import NamedTemporaryFile
 import argparse
-
-
-'''
-sample1: 'https://www.youtube.com/watch?v=KBo7mZHlink'
-sample2: 'https://www.youtube.com/watch?v=E2NBQY-AWpk'
-sample3: 'https://www.youtube.com/watch?v=0fYi8SGA20k'
-sampel4: 'https://www.youtube.com/watch?v=PLC_3ZHkNag', 2분54초
-'''
+from io import BytesIO
+from tempfile import NamedTemporaryFile
+import magic
 
 load_dotenv()
+MAX_SIZE=25000000 # 25MB
 
-# Need to update this code to tell size of the file
 
 def main():
-    
-    # Allow user to put video link on the terminal for now
-    parser=argparse.ArgumentParser(description='Process a video file.')
-    parser.add_argument("--input", "-i", type=str, required=True)
-    # 어짜피 유튜브링크를 삽입할거니까, type=str
-    args=parser.parse_args()
-    user_input=args.input
-    
-    # Use user-inputted video link
-    VIDEO_LINK=user_input
-    yt=YouTube(VIDEO_LINK) # Assign YouTube object
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", '-i', type=str,required=True, help="YouTube video link")
+    args = parser.parse_args()
+    url = args.input
+    yt = YouTube(url)
+    title = yt.title
+    length = yt.length
+    # video detail
+    detail = yt.description
+    print(f"Video title: {title}")
+
+    if detail is None:
+        print("No video description")
+    else:
+        print(f"Video description: {detail}")
+
+    # Print video length in hrs, mins, secs
+    hours = length // 3600
+    minutes = (length % 3600) // 60
+    seconds = length % 60
+    print(f"Video length: {hours} hrs {minutes} mins {seconds} secs")
 
 
-   
-    temp_audio_file=NamedTemporaryFile(delete=False)
-    '''Creates a temporary file using the NamedTemporaryFile function from the tempfile module. 
-    The delete=False argument ensures that the file is not deleted automatically when it is closed. 
-    This temporary file will be used to store the audio stream from the YouTube video.'''
-    
-     # Extract audio from video
-    yt.streams.filter(only_audio=True).first().stream_to_buffer(temp_audio_file)
+    # Get the highest resolution audio stream
+    audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first() # Orders streams by their audio bit rate (abr) in descending order, and finally selects the first (i.e., highest bit rate) audio stream.
+    print(f"Audio file size: {audio_stream.filesize} bytes")
+    print(f"Audio file size: {audio_stream.filesize/1000000} MB") # 1MB=1000000bytes
 
-    # Gets the size of the audio stream in bytes by using the tell() method on the temporary file object.
-    audio_size = temp_audio_file.tell()
+    temp_audio_file=NamedTemporaryFile(delete=False, suffix=".wav")
+    audio_stream.stream_to_buffer(temp_audio_file)
 
-    # flushes the contents of the temporary file to disk. This ensures that the audio stream is saved to the file and can be accessed later
+    # audio_size
+    audio_size=temp_audio_file.tell()
+
+    # Flush the contents of the temporary file to disk
     temp_audio_file.flush()
-
-    # Reset file pointer to beginning of temporary file, it allows audio stream can be read from the beginning of the file when it is later used in the code
     temp_audio_file.seek(0)
 
+    
 
-    # Convert length of video from seconds to hours, minutes, and seconds
-    length_seconds = yt.length
-    length_hours = length_seconds // 3600
-    length_minutes = (length_seconds % 3600) // 60
-    length_seconds = length_seconds % 60
-
-    # Print video title, length, file size in bytes and megabytes
-    print(f"User input link: {user_input}")
-    print(f"The title: {yt.title}")
-    print(f"The length of the video: {length_hours} hrs {length_minutes} mins {length_seconds} secs")
-    print(f"The file size is {audio_size} bytes")
-    print(f"And it is {audio_size/1000000} MB")
-
-    # 1MB=1000000bytes
-
-    # check file size to handle with openai api, 기준 25MB
-    if audio_size < 25000000:
-        print("It's less than 25MB, Good size")
-       
-        transcribe(temp_audio_file)
+    # If audio file size is more than 25MB, split into 25MB chunks and transcribe or translate each chunk based on detected language
+    if audio_size > MAX_SIZE:
+        print("Audio file size is more than 25MB. Splitting into 25MB chunks...")
+        split_audio(temp_audio_file)
     else:
-        print("Filesize is over 25MB, Not okay")
-        # chunk function 실행
+       transcribe_to_en(temp_audio_file)
+       #transcribe(temp_audio_file)
 
-    # close the temporary file created by `NamedTemporaryFile`
     temp_audio_file.close()
 
 
+# split audio function
+def split_audio(audio_file):
+    # Split audio file into 25MB chunks
+    chunk_size=MAX_SIZE
+    chunk_num=0
+    while True:
+        chunk=audio_file.read(chunk_size)
+        if not chunk:
+            break
+        chunk_num+=1
+        chunk_file=NamedTemporaryFile(delete=False, suffix=".wav")
+        chunk_file.write(chunk)
 
-# Chunk audio file function
+        chunk_file.flush()
+        chunk_file.seek(0)
+        transcribe_to_en(chunk_file)
+        #transcribe(chunk_file)
+        chunk_file.close()
+        print(f"Chunk {chunk_num} transcribed or translated successfully!")
 
-# def chunk():
-#     pass
 
 
+# # transcribe function using Open AI Whisper API
+# def transcribe(audio_file):
+#     openai.api_key = os.getenv("OPENAI_API_KEY")
+
+#     file_obj=BytesIO(audio_file.read())
+#     file_obj.name="audio_file.wav"
+#     response=openai.Audio.translate("whisper-1", file_obj)
+#     print(response['text'])
+   
 
 
-
-# Trascribe function
-
-def transcribe(audio_file):
-    # Load your API key from an environment variable or secret management service
+# translate function using Open AI Whisper API
+def transcribe_to_en(audio_file):
     openai.api_key = os.getenv("OPENAI_API_KEY")
+
+    
     file_obj=BytesIO(audio_file.read())
-
-    # If I don't set name, AttributeError: '_io.BytesIO' object has no attribute 'name' this error occurs
-    file_obj.name = "audio_file.wav"
-    transcript = openai.Audio.transcribe("whisper-1", file_obj)
-    print(transcript['text'])
+    file_obj.name="audio_file.wav"
+    response=openai.Audio.translate("whisper-1", file_obj , to_language="en")
+    print(response['text'])
 
 
 
 
-# # Translate function: 98개의 서로다른 언어를 영어로 번역가능
-
-# def translate():
-#     pass
+   
 
 
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
+
+
+'''translation to english works for both below and above 25MB audio file size
+But, I got this error after trancribe_to_en of more than 25MB audio file size, Traceback (most recent call last):
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/app.py", line 121, in <module>
+    main()
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/app.py", line 68, in main
+    split_audio(temp_audio_file)
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/app.py", line 90, in split_audio
+    transcribe_to_en(chunk_file)
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/app.py", line 113, in transcribe_to_en
+    response=openai.Audio.translate("whisper-1", file_obj , to_language="en")
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/stt-venv/lib/python3.10/site-packages/openai/api_resources/audio.py", line 76, in translate
+    response, _, api_key = requestor.request("post", url, files=files, params=data)
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/stt-venv/lib/python3.10/site-packages/openai/api_requestor.py", line 226, in request
+    resp, got_stream = self._interpret_response(result, stream)
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/stt-venv/lib/python3.10/site-packages/openai/api_requestor.py", line 619, in _interpret_response
+    self._interpret_response_line(
+  File "/Users/seokhyeonbyun/Desktop/STT/backend/stt-venv/lib/python3.10/site-packages/openai/api_requestor.py", line 682, in _interpret_response_line
+    raise self.handle_error_response(
+openai.error.InvalidRequestError: Invalid file format. Supported formats: ['m4a', 'mp3', 'webm', 'mp4', 'mpga', 'wav', 'mpeg']
+'''
